@@ -329,3 +329,57 @@ async def agent_chat(payload: dict):
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
     return StreamingResponse(generate(), media_type="text/event-stream")
+@app.post("/api/qa/compare")
+async def qa_compare(payload: dict):
+    paper_ids = payload.get("paper_ids", [])
+    question = payload.get("question", "")
+    
+    if len(paper_ids) < 2 or not llm_client:
+        raise HTTPException(400, "至少选择两篇论文，或未配置大模型")
+
+    async def generate():
+        yield f"data: {json.dumps({'agent': '正在调取文献', 'status': 'running'})}\n\n"
+        
+        contexts = []
+        for pid in paper_ids:
+            if pid in DB:
+                paper = DB[pid]
+                contexts.append(f"【文献: {paper['filename']}】\n{paper['full_text'][:15000]}")
+        
+                await asyncio.sleep(0.5)
+        # 👇 加上这一行：告诉前端文献调取完毕
+        yield f"data: {json.dumps({'agent': '正在调取文献', 'status': 'done'})}\n\n"
+        
+        yield f"data: {json.dumps({'agent': '正在生成对比分析', 'status': 'running'})}\n\n"
+
+        combined_context = "\n\n".join(contexts)
+        
+        # ... (中间的 prompt 定义和 llm_client 调用保持不变) ...
+        prompt = f"""你是一个专业的学术研究助手，现在需要对比分析以下多篇文献。
+        
+文献内容如下：
+{combined_context}
+
+用户的问题/对比要求是：{question}
+
+请严格遵守以下要求：
+1. 提取各篇文献的核心观点进行横向对比。
+2. 必须客观，如果文献中找不到对应信息，明确指出“文献未提及”。
+3. 按照主题或维度进行结构化对比，不要长篇大论。
+"""
+                # 👇 加上这一行：告诉前端对比分析生成完毕，准备输出文字
+        yield f"data: {json.dumps({'agent': '正在生成对比分析', 'status': 'done'})}\n\n"
+        try:
+            res = llm_client.chat.completions.create(
+                model="deepseek-chat", 
+                messages=[{"role": "user", "content": prompt}], 
+                stream=True
+            )
+            for chunk in res:
+                if chunk.choices[0].delta.content:
+                    yield f"data: {json.dumps({'agent': '生成对比结果', 'text': chunk.choices[0].delta.content})}\n\n"
+            yield f"data: {json.dumps({'agent': '生成对比结果', 'status': 'done'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'agent': '生成对比结果', 'status': 'error', 'text': str(e)})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
