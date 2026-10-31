@@ -281,3 +281,51 @@ def get_futurework():
         if fw:
             results.append({"paper_id": pid, "filename": paper["filename"], "future_work": fw[:3]})
     return {"items": results}
+@app.post("/api/agent/chat")
+async def agent_chat(payload: dict):
+    user_input = payload.get("message", "")
+    if not llm_client: raise HTTPException(500, "未配置模型")
+
+    async def generate():
+        yield f"data: {json.dumps({'type': 'thought', 'content': '正在分析您的意图并拆解任务...'})}\n\n"
+        await asyncio.sleep(0.5)
+
+        tools_desc = """
+        你是一个科研 Agent，可以调用以下工具：
+        1. [SEARCH_LIBRARY]: 检索本地文献库。
+        2. [GENERATE_FRAMEWORK]: 根据Idea生成论文框架。
+        请输出 JSON 格式决策：{"tool": "工具名", "args": "参数"}
+        如果无需工具，输出：{"tool": "DIRECT", "args": "直接回答内容"}
+        """
+        try:
+            res = llm_client.chat.completions.create(
+                model="deepseek-chat", 
+                messages=[{"role": "system", "content": tools_desc}, {"role": "user", "content": user_input}], 
+                temperature=0
+            )
+            action = json.loads(res.choices[0].message.content.strip().replace("```json","").replace("```",""))
+            tool, args = action.get("tool"), action.get("args")
+            
+            yield f"data: {json.dumps({'type': 'action', 'content': f'决定调用工具：{tool}'})}\n\n"
+            await asyncio.sleep(0.5)
+
+            observation = ""
+            if tool == "SEARCH_LIBRARY":
+                papers = list_papers()
+                observation = f"检索到 {len(papers)} 篇文献：{papers}"
+            elif tool == "GENERATE_FRAMEWORK":
+                observation = "框架已生成，包含 Abstract, Introduction 等结构。"
+            else:
+                observation = args
+
+            yield f"data: {json.dumps({'type': 'observation', 'content': observation})}\n\n"
+            yield f"data: {json.dumps({'type': 'final', 'content': '正在整理最终回复...'})}\n\n"
+            
+            final_prompt = f"用户问题：{user_input}\n观察结果：{observation}\n请输出最终回复。"
+            final_res = llm_client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": final_prompt}], stream=True)
+            for chunk in final_res:
+                if chunk.choices[0].delta.content:
+                    yield f"data: {json.dumps({'type': 'text', 'content': chunk.choices[0].delta.content})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+    return StreamingResponse(generate(), media_type="text/event-stream")

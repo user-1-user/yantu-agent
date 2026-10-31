@@ -84,13 +84,14 @@ export default function CopilotPage() {
           </div>
           
           {plot && (
-            <div className="mt-4 border rounded-lg p-4 bg-slate-50 flex-1 flex flex-col">
-              <img src={plot.image_url} alt="Generated Chart" className="w-full rounded-md shadow-sm mb-4 border" />
-              <div className="text-sm text-slate-700 bg-white p-4 rounded-md border border-slate-200">
-                <span className="font-bold text-slate-900 block mb-1">Auto-generated Figure Caption:</span>
-                <p className="italic text-slate-600">{plot.caption}</p>
-              </div>
-            </div>
+        <div className="mt-4 border rounded-lg p-4 bg-slate-50 flex-1 flex flex-col">
+             {/* eslint-disable-next-line @next/next/no-img-element */}
+         <img src={plot.image_url} alt="Generated Chart" className="w-full rounded-md shadow-sm mb-4 border" />
+        <div className="text-sm text-slate-700 bg-white p-4 rounded-md border border-slate-200">
+        <span className="font-bold text-slate-900 block mb-1">Auto-generated Figure Caption:</span>
+        <p className="italic text-slate-600">{plot.caption}</p>
+           </div>
+             </div>
           )}
           {!plot && !uploading && (
             <div className="flex-1 flex items-center justify-center border-2 border-dashed rounded-lg border-slate-200 bg-slate-50 text-slate-400 text-sm">
