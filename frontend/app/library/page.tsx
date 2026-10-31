@@ -40,6 +40,11 @@ export default function Library() {
   }, [fetchPapers]);
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!localStorage.getItem("yantu_token")) {
+      window.dispatchEvent(new Event("open-login-modal"));
+      e.target.value = ""; // 清空选中的文件
+      return;
+    }
     const f = e.target.files?.[0]; if (!f) return;
     setLoading(true);
     const form = new FormData(); form.append("file", f);

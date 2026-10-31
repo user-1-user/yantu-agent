@@ -17,8 +17,16 @@ export default function CopilotPage() {
 
   // 1. 上传 CSV 并生成图表
   const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    // 1. 检查是否登录
+    if (!localStorage.getItem("yantu_token")) {
+      window.dispatchEvent(new Event("open-login-modal"));
+      e.target.value = ""; // 👈 关键：清空选中的文件
+      return;
+    }
+
     const f = e.target.files?.[0];
     if (!f) return;
+    
     setUploading(true);
     try {
       const form = new FormData();
@@ -32,12 +40,24 @@ export default function CopilotPage() {
       alert("CSV 生成失败，请检查后端终端是否报错。");
     } finally {
       setUploading(false);
+      e.target.value = ""; // 成功上传后也清空，允许重复选同一个文件
     }
   };
 
   // 2. 生成论文框架
   const handleWrite = async () => {
-    if (!idea.trim()) return;
+    // 1. 先检查有没有输入 Idea
+    if (!idea.trim()) {
+      alert("请先输入您的科研 Idea！");
+      return;
+    }
+    
+    // 2. 检查是否登录，未登录则唤起弹窗
+    if (!localStorage.getItem("yantu_token")) {
+      window.dispatchEvent(new Event("open-login-modal"));
+      return;
+    }
+
     setWriting(true);
     try {
       const res = await fetch("/api/write/framework", {

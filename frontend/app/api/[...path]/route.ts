@@ -7,16 +7,18 @@ export async function GET(req: NextRequest) {
   try {
     const res = await fetch(`${BACKEND_URL}${path}`);
     
-    // 如果后端状态码不是 200，直接透传
-    if (!res.ok) {
-      return new NextResponse(res.body, { status: res.status });
+    // 统一解析为文本，再转 JSON 返回，防止丢失 Content-Type
+    const text = await res.text();
+    let data;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { detail: text };
     }
-    
-    const data = await res.json();
     return NextResponse.json(data, { status: res.status });
   } catch (error) {
     console.error("代理 GET 请求失败:", error);
-    return NextResponse.json({ error: "无法连接到后端" }, { status: 502 });
+    return NextResponse.json({ detail: "无法连接到后端服务" }, { status: 502 });
   }
 }
 
@@ -32,7 +34,7 @@ export async function POST(req: NextRequest) {
       body: body,
     });
 
-    // 针对流式问答的特殊处理
+    // 1. 针对流式问答的特殊处理 (SSE)
     if (res.headers.get('content-type')?.includes('text/event-stream')) {
       return new NextResponse(res.body, {
         status: res.status,
@@ -40,14 +42,18 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    if (!res.ok) {
-      return new NextResponse(res.body, { status: res.status });
+    // 2. 统一解析为文本，再转 JSON 返回
+    const text = await res.text();
+    let data;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { detail: text };
     }
-
-    const data = await res.json();
     return NextResponse.json(data, { status: res.status });
+    
   } catch (error) {
     console.error("代理 POST 请求失败:", error);
-    return NextResponse.json({ error: "无法连接到后端" }, { status: 502 });
+    return NextResponse.json({ detail: "无法连接到后端服务" }, { status: 502 });
   }
 }

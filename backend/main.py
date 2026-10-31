@@ -18,6 +18,7 @@ import re
 import json
 import asyncio
 import traceback
+import hashlib
 
 # ==========================================
 # 1. 初始化与环境配置
@@ -27,7 +28,7 @@ load_dotenv()
 app = FastAPI(title="研途助手 API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],  # 为了方便测试，这里允许所有来源
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -72,17 +73,15 @@ def extract_pages(path: str):
 def retrieve_context(paper: dict, question: str, top_k=5):
     """
     智能检索：
-    1. 如果论文短（< 40000 字符），直接返回带页码标记的全文，大模型自己看，解决一切中英混合问题。
+    1. 如果论文短（< 40000 字符），直接返回带页码标记的全文，大模型自己看。
     2. 如果超长，走分词打分检索。
     """
-    # 构建带页码的全文
     page_texts = [f"[第{p['page']}页]\n{p['text']}" for p in paper["pages"]]
     full_text_with_pages = "\n\n".join(page_texts)
     
     if len(full_text_with_pages) < 40000:
         return [{"page": 1, "quote": full_text_with_pages}]
     
-    # 超长文档分块检索
     chunks = []
     for p in paper["pages"]:
         for para in p["text"].split("\n"):
@@ -101,13 +100,12 @@ def retrieve_context(paper: dict, question: str, top_k=5):
     scored_chunks.sort(key=lambda x: -x[0])
     hits = [ch for score, ch in scored_chunks[:top_k] if score > 0]
     
-    # 兜底：如果没匹配到，给前几页
     if not hits and chunks:
         hits = chunks[:5]
     return hits
 
 # ==========================================
-# 3. API 接口
+# 3. 基础 API 接口
 # ==========================================
 @app.get("/api/health")
 def health():
@@ -149,6 +147,9 @@ async def upload_paper(file: UploadFile = File(...)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+# ==========================================
+# 4. 核心 Agent 与流式接口
+# ==========================================
 @app.post("/api/qa/stream")
 async def qa_stream(payload: dict):
     pid = payload.get("paper_id")
@@ -162,7 +163,6 @@ async def qa_stream(payload: dict):
         hits = retrieve_context(paper, question)
         await asyncio.sleep(0.3)
         
-        # 如果只有一段且是全文，不在界面展示巨大的来源文本
         display_sources = [{"page": h["page"], "quote": h["quote"][:200]+"..."} for h in hits if h["quote"] != paper["full_text"]]
         if not display_sources and hits:
             display_sources = [{"page": "全文", "quote": "已通读全文进行回答"}]
@@ -196,6 +196,60 @@ async def qa_stream(payload: dict):
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
+@app.post("/api/qa/compare")
+async def qa_compare(payload: dict):
+    paper_ids = payload.get("paper_ids", [])
+    question = payload.get("question", "")
+    
+    if len(paper_ids) < 2 or not llm_client:
+        raise HTTPException(400, "至少选择两篇论文，或未配置大模型")
+
+    async def generate():
+        yield f"data: {json.dumps({'agent': '正在调取文献', 'status': 'running'})}\n\n"
+        
+        contexts = []
+        for pid in paper_ids:
+            if pid in DB:
+                paper = DB[pid]
+                contexts.append(f"【文献: {paper['filename']}】\n{paper['full_text'][:15000]}")
+        
+        await asyncio.sleep(0.5)
+        yield f"data: {json.dumps({'agent': '正在调取文献', 'status': 'done'})}\n\n"
+        yield f"data: {json.dumps({'agent': '正在生成对比分析', 'status': 'running'})}\n\n"
+
+        combined_context = "\n\n".join(contexts)
+        prompt = f"""你是一个专业的学术研究助手，现在需要对比分析以下多篇文献。
+        
+文献内容如下：
+{combined_context}
+
+用户的问题/对比要求是：{question}
+
+请严格遵守以下要求：
+1. 提取各篇文献的核心观点进行横向对比。
+2. 必须客观，如果文献中找不到对应信息，明确指出“文献未提及”。
+3. 按照主题或维度进行结构化对比，不要长篇大论。
+"""
+        yield f"data: {json.dumps({'agent': '正在生成对比分析', 'status': 'done'})}\n\n"
+        
+        try:
+            res = llm_client.chat.completions.create(
+                model="deepseek-chat", 
+                messages=[{"role": "user", "content": prompt}], 
+                stream=True
+            )
+            for chunk in res:
+                if chunk.choices[0].delta.content:
+                    yield f"data: {json.dumps({'agent': '生成对比结果', 'text': chunk.choices[0].delta.content})}\n\n"
+            yield f"data: {json.dumps({'agent': '生成对比结果', 'status': 'done'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'agent': '生成对比结果', 'status': 'error', 'text': str(e)})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+# ==========================================
+# 5. 翻译、图谱与写作接口
+# ==========================================
 @app.post("/api/translate")
 def translate_text(payload: dict):
     text = payload.get("text", "")
@@ -223,12 +277,10 @@ def build_graph():
                 edges.append({"source": pid, "target": other})
     try: pr = nx.pagerank(G)
     except: pr = {n: 0 for n in G.nodes}
-    nodes = [{"id": n, "name": titles[n], "size": 20 + pr.get(n, 0) * 800} for n in G.nodes]
+        # 基础大小设为 45，有 PageRank 的节点再额外放大
+    nodes = [{"id": n, "name": titles[n], "size": 45 + pr.get(n, 0) * 1000} for n in G.nodes]
     return {"nodes": nodes, "edges": edges}
 
-# ==========================================
-# 4. 阶段4：CSV 图表与写作
-# ==========================================
 @app.post("/api/csv/plot")
 async def csv_plot(file: UploadFile = File(...)):
     try:
@@ -281,6 +333,57 @@ def get_futurework():
         if fw:
             results.append({"paper_id": pid, "filename": paper["filename"], "future_work": fw[:3]})
     return {"items": results}
+
+# ==========================================
+# 6. 注册登录鉴权接口
+# ==========================================
+USER_DB_FILE = "users.json"
+
+def load_users():
+    if not os.path.exists(USER_DB_FILE):
+        return {}
+    with open(USER_DB_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_users(users):
+    with open(USER_DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f)
+
+@app.post("/api/auth/register")
+def register(payload: dict):
+    username = payload.get("username")
+    password = payload.get("password")
+    if not username or not password:
+        raise HTTPException(400, "用户名和密码不能为空")
+    
+    users = load_users()
+    if username in users:
+        raise HTTPException(400, "该用户名已被注册")
+    
+    pwd_hash = hashlib.sha256(password.encode()).hexdigest()
+    users[username] = pwd_hash
+    save_users(users)
+    
+    return {"message": "注册成功", "token": f"mock-token-{username}"}
+
+@app.post("/api/auth/login")
+def login(payload: dict):
+    username = payload.get("username")
+    password = payload.get("password")
+    
+    users = load_users()
+    if username not in users:
+        raise HTTPException(401, "用户名或密码错误")
+    
+    pwd_hash = hashlib.sha256(password.encode()).hexdigest()
+    if users[username] != pwd_hash:
+        raise HTTPException(401, "用户名或密码错误")
+        
+    return {"message": "登录成功", "token": f"mock-token-{username}", "username": username}
+
+# ==========================================
+# 7. 全能 Agent 接口
+# ==========================================
 @app.post("/api/agent/chat")
 async def agent_chat(payload: dict):
     user_input = payload.get("message", "")
@@ -328,58 +431,4 @@ async def agent_chat(payload: dict):
                     yield f"data: {json.dumps({'type': 'text', 'content': chunk.choices[0].delta.content})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
-    return StreamingResponse(generate(), media_type="text/event-stream")
-@app.post("/api/qa/compare")
-async def qa_compare(payload: dict):
-    paper_ids = payload.get("paper_ids", [])
-    question = payload.get("question", "")
-    
-    if len(paper_ids) < 2 or not llm_client:
-        raise HTTPException(400, "至少选择两篇论文，或未配置大模型")
-
-    async def generate():
-        yield f"data: {json.dumps({'agent': '正在调取文献', 'status': 'running'})}\n\n"
-        
-        contexts = []
-        for pid in paper_ids:
-            if pid in DB:
-                paper = DB[pid]
-                contexts.append(f"【文献: {paper['filename']}】\n{paper['full_text'][:15000]}")
-        
-                await asyncio.sleep(0.5)
-        # 👇 加上这一行：告诉前端文献调取完毕
-        yield f"data: {json.dumps({'agent': '正在调取文献', 'status': 'done'})}\n\n"
-        
-        yield f"data: {json.dumps({'agent': '正在生成对比分析', 'status': 'running'})}\n\n"
-
-        combined_context = "\n\n".join(contexts)
-        
-        # ... (中间的 prompt 定义和 llm_client 调用保持不变) ...
-        prompt = f"""你是一个专业的学术研究助手，现在需要对比分析以下多篇文献。
-        
-文献内容如下：
-{combined_context}
-
-用户的问题/对比要求是：{question}
-
-请严格遵守以下要求：
-1. 提取各篇文献的核心观点进行横向对比。
-2. 必须客观，如果文献中找不到对应信息，明确指出“文献未提及”。
-3. 按照主题或维度进行结构化对比，不要长篇大论。
-"""
-                # 👇 加上这一行：告诉前端对比分析生成完毕，准备输出文字
-        yield f"data: {json.dumps({'agent': '正在生成对比分析', 'status': 'done'})}\n\n"
-        try:
-            res = llm_client.chat.completions.create(
-                model="deepseek-chat", 
-                messages=[{"role": "user", "content": prompt}], 
-                stream=True
-            )
-            for chunk in res:
-                if chunk.choices[0].delta.content:
-                    yield f"data: {json.dumps({'agent': '生成对比结果', 'text': chunk.choices[0].delta.content})}\n\n"
-            yield f"data: {json.dumps({'agent': '生成对比结果', 'status': 'done'})}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'agent': '生成对比结果', 'status': 'error', 'text': str(e)})}\n\n"
-
     return StreamingResponse(generate(), media_type="text/event-stream")

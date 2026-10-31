@@ -15,9 +15,7 @@ export default function Reader({ params }: { params: Promise<{ id: string }> }) 
   const [sources, setSources] = useState<any[]>([]);
   const [running, setRunning] = useState(false);
   
-  // 参考文献弹窗状态
   const [refModal, setRefModal] = useState<{ visible: boolean; content: string }>({ visible: false, content: "" });
-
   const syncLock = useRef(false);
 
   useEffect(() => {
@@ -36,6 +34,11 @@ export default function Reader({ params }: { params: Promise<{ id: string }> }) 
   };
 
   const handleTranslate = async (page: number, text: string) => {
+    if (!localStorage.getItem("yantu_token")) {
+      window.dispatchEvent(new Event("open-login-modal"));
+      return;
+    }
+
     setTranslating(page);
     try {
       const res = await fetch("/api/translate", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ text }) });
@@ -48,6 +51,11 @@ export default function Reader({ params }: { params: Promise<{ id: string }> }) 
 
   const handleAsk = async () => {
     if (!q || running) return;
+    if (!localStorage.getItem("yantu_token")) {
+      window.dispatchEvent(new Event("open-login-modal"));
+      return;
+    }
+
     setRunning(true); setLogs([]); setAns(""); setSources([]);
     const res = await fetch("/api/qa/stream", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ paper_id: id, question: q }) });
     const reader = res.body?.getReader(); const decoder = new TextDecoder();
@@ -71,7 +79,6 @@ export default function Reader({ params }: { params: Promise<{ id: string }> }) 
     setRunning(false);
   };
 
-   // 点击参考文献 (终极防呆版)
    const handleRefClick = (refNumber: string, fullText: string) => {
     const regex = new RegExp(`\\[${refNumber}\\]`, 'g');
     let match;
@@ -102,7 +109,7 @@ export default function Reader({ params }: { params: Promise<{ id: string }> }) 
       setRefModal({ visible: true, content: `未在正文解析文本中找到 [${refNumber}] 的详细英文条目，请参阅原文 PDF。` });
     }
   };
-  // 渲染文本，将 [数字] 替换为可点击按钮
+
   const renderText = (text: string, fullText: string) => {
     const parts = text.split(/(\[\d+\])/g);
     return parts.map((part, index) => {
@@ -126,7 +133,8 @@ export default function Reader({ params }: { params: Promise<{ id: string }> }) 
   if (!paper) return <div className="p-10 text-center text-slate-500">加载论文中...</div>;
 
   return (
-    <div className="flex h-screen bg-slate-50 p-4 gap-4 overflow-hidden relative">
+    // 核心修复 1：h-screen 改为 h-full
+    <div className="flex h-full bg-slate-50 p-4 gap-4 overflow-hidden relative">
       
       {/* 参考文献弹窗 */}
       {refModal.visible && (
@@ -145,9 +153,11 @@ export default function Reader({ params }: { params: Promise<{ id: string }> }) 
 
       <div className="flex-1 flex gap-4 overflow-hidden">
         {/* 英文原文 */}
-        <div className="flex-1 bg-white rounded-xl border border-slate-200 flex flex-col shadow-sm">
-          <div className="p-3 border-b font-bold text-sm text-slate-700 flex items-center gap-2 bg-slate-50/50"><BookOpen className="w-4 h-4 text-blue-500"/> 英文原文 (点击 [数字] 查看参考文献)</div>
-          <div id="left" onScroll={e => syncScroll(e, "right")} className="p-6 overflow-auto text-sm leading-loose text-slate-700">
+        {/* 核心修复 2：添加 h-full 和 overflow-hidden 限制外层高度 */}
+        <div className="flex-1 bg-white rounded-xl border border-slate-200 flex flex-col shadow-sm h-full overflow-hidden">
+          <div className="p-3 border-b font-bold text-sm text-slate-700 flex items-center gap-2 bg-slate-50/50 shrink-0"><BookOpen className="w-4 h-4 text-blue-500"/> 英文原文 (点击 [数字] 查看参考文献)</div>
+          {/* 核心修复 3：滚动区添加 flex-1 min-h-0 */}
+          <div id="left" onScroll={e => syncScroll(e, "right")} className="p-6 overflow-auto text-sm leading-loose text-slate-700 flex-1 min-h-0">
             {paper.pages?.map((p: any) => (
               <div key={p.page} className="mb-8">
                 <span className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded mb-2 inline-block">第 {p.page} 页</span>
@@ -160,9 +170,9 @@ export default function Reader({ params }: { params: Promise<{ id: string }> }) 
         </div>
 
         {/* 中文翻译 */}
-        <div className="flex-1 bg-white rounded-xl border border-slate-200 flex flex-col shadow-sm">
-          <div className="p-3 border-b font-bold text-sm text-slate-700 flex items-center gap-2 bg-slate-50/50"><Languages className="w-4 h-4 text-green-500"/> 中文翻译</div>
-          <div id="right" onScroll={e => syncScroll(e, "left")} className="p-6 overflow-auto text-sm leading-loose text-slate-700">
+        <div className="flex-1 bg-white rounded-xl border border-slate-200 flex flex-col shadow-sm h-full overflow-hidden">
+          <div className="p-3 border-b font-bold text-sm text-slate-700 flex items-center gap-2 bg-slate-50/50 shrink-0"><Languages className="w-4 h-4 text-green-500"/> 中文翻译</div>
+          <div id="right" onScroll={e => syncScroll(e, "left")} className="p-6 overflow-auto text-sm leading-loose text-slate-700 flex-1 min-h-0">
             {paper.pages?.map((p: any) => (
               <div key={p.page} className="mb-8">
                 <div className="flex justify-between items-center mb-2">
@@ -179,9 +189,13 @@ export default function Reader({ params }: { params: Promise<{ id: string }> }) 
       </div>
 
       {/* 右侧 Agent 问答 */}
-      <div className="w-[400px] bg-white rounded-xl border border-slate-200 flex flex-col shrink-0 shadow-sm">
-        <div className="p-4 border-b font-bold flex items-center gap-2 bg-slate-50/50 text-slate-800"><Bot className="w-5 h-5 text-blue-600"/> Agent 问答与溯源</div>
-        <div className="flex-1 p-4 overflow-auto space-y-4">
+      {/* 核心修复 4：添加 h-full 和 overflow-hidden */}
+      <div className="w-[400px] bg-white rounded-xl border border-slate-200 flex flex-col shrink-0 shadow-sm h-full overflow-hidden">
+        <div className="p-4 border-b font-bold flex items-center gap-2 bg-slate-50/50 text-slate-800 shrink-0">
+          <Bot className="w-5 h-5 text-blue-600"/> Agent 问答与溯源
+        </div>
+        
+        <div className="flex-1 p-4 overflow-auto space-y-4 min-h-0">
           {logs.map((l, i) => (
             <div key={i} className="flex gap-2 text-sm items-center text-slate-600">
               {l.status === 'running' ? <Loader2 className="w-4 h-4 text-blue-500 animate-spin"/> : <CheckCircle2 className="w-4 h-4 text-green-500"/>} {l.agent}
@@ -200,9 +214,18 @@ export default function Reader({ params }: { params: Promise<{ id: string }> }) 
             </div>
           )}
         </div>
-        <div className="p-4 border-t flex gap-2">
-          <input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAsk()} className="flex-1 border p-2 rounded-lg text-sm outline-none focus:border-blue-500" placeholder="向这篇论文提问..." />
-          <button onClick={handleAsk} disabled={running} className="bg-blue-600 text-white p-2 rounded-lg hover:bg-blue-700 transition"><Send className="w-5 h-5"/></button>
+
+        <div className="p-4 border-t flex gap-2 bg-white shrink-0 rounded-b-xl">
+          <input 
+            value={q} 
+            onChange={e => setQ(e.target.value)} 
+            onKeyDown={e => e.key === 'Enter' && handleAsk()} 
+            className="flex-1 border p-2 rounded-lg text-sm outline-none focus:border-blue-500 bg-slate-50 focus:bg-white transition" 
+            placeholder="向这篇论文提问..." 
+          />
+          <button onClick={handleAsk} disabled={running} className="bg-blue-600 text-white p-2 rounded-lg hover:bg-blue-700 transition">
+            <Send className="w-5 h-5"/>
+          </button>
         </div>
       </div>
     </div>

@@ -16,7 +16,13 @@ export default function GraphPage() {
   const [fwList, setFwList] = useState<FwItem[]>([]);
   const [fwLoading, setFwLoading] = useState(false);
 
+  // 生成图谱
   const loadGraph = async () => {
+    if (!localStorage.getItem("yantu_token")) {
+      window.dispatchEvent(new Event("open-login-modal"));
+      return;
+    }
+
     setLoading(true);
     try {
       const res = await fetch("/api/graph/build", { method: "POST" });
@@ -28,7 +34,13 @@ export default function GraphPage() {
     }
   };
 
+  // 提取 FutureWork
   const loadFutureWork = async () => {
+    if (!localStorage.getItem("yantu_token")) {
+      window.dispatchEvent(new Event("open-login-modal"));
+      return;
+    }
+
     setFwLoading(true);
     try {
       const res = await fetch("/api/futurework", { method: "POST" });
@@ -52,26 +64,42 @@ export default function GraphPage() {
           <h1 className="text-3xl font-bold text-slate-900">引用拓扑图谱</h1>
           <p className="text-slate-500 mt-1">通过 PageRank 算法挖掘领域基石论文。</p>
         </div>
-        <button onClick={loadGraph} disabled={loading} className="bg-blue-600 text-white px-6 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700">
+        <button onClick={loadGraph} disabled={loading} className="bg-blue-600 text-white px-6 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition shadow-sm">
           {loading ? <Loader2 className="w-5 h-5 animate-spin"/> : <Network className="w-5 h-5"/>} 生成图谱
         </button>
       </div>
       
-      <div className="h-[400px] bg-white border border-slate-200 rounded-xl p-4 shadow-sm mb-8 shrink-0">
+      <div className="h-[450px] bg-white border border-slate-200 rounded-xl p-4 shadow-sm mb-8 shrink-0">
         {graph ? (
           <ReactECharts 
             style={{ height: "100%", width: "100%" }} 
             option={{
               tooltip: {},
               series: [{
-                type: "graph", layout: "force", roam: true,
+                type: "graph", 
+                layout: "force", 
+                roam: true,
                 data: graph.nodes.map((n: GraphNode) => ({
-                  id: n.id, name: n.name, symbolSize: n.size,
-                  itemStyle: { color: n.size > 50 ? "#e11d48" : "#2563eb" }
+                  id: n.id, 
+                  name: n.name, 
+                  symbolSize: n.size,
+                  // 阈值调整为 65 配合后端 45 的基数
+                  itemStyle: { color: n.size > 65 ? "#e11d48" : "#2563eb" }
                 })),
                 links: graph.edges,
-                label: { show: true, fontSize: 12, position: "bottom" },
-                force: { repulsion: 300, edgeLength: 150 }
+                label: { 
+                  show: true, 
+                  fontSize: 13, 
+                  position: "bottom",
+                  distance: 8,
+                  color: "#334155",
+                  fontWeight: "bold"
+                },
+                force: { 
+                  repulsion: 800, 
+                  edgeLength: 200,
+                  gravity: 0.1
+                }
               }]
             }} 
           />
@@ -86,8 +114,8 @@ export default function GraphPage() {
         <div className="flex items-center gap-2 mb-4">
           <Lightbulb className="w-6 h-6 text-amber-500" />
           <h2 className="text-2xl font-bold text-slate-800">多篇论文 Future Work 提取</h2>
-          <button onClick={loadFutureWork} disabled={fwLoading} className="ml-4 text-sm text-blue-600 border border-blue-200 px-3 py-1 rounded hover:bg-blue-50">
-            刷新提取
+          <button onClick={loadFutureWork} disabled={fwLoading} className="ml-4 text-sm text-blue-600 border border-blue-200 px-3 py-1 rounded hover:bg-blue-50 transition">
+            {fwLoading ? "提取中..." : "刷新提取"}
           </button>
         </div>
         
